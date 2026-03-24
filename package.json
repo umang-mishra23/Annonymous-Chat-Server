@@ -1,0 +1,14 @@
+{
+  "name": "ephemeral-anon-chat",
+  "version": "1.0.0",
+  "description": "Ephemeral anonymous public + private chats (in-memory).",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.22.1",
+    "ws": "^8.18.3"
+  }
+}

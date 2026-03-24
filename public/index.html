@@ -1,0 +1,272 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Ephemeral Anonymous Chat — Public + Private</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { --accent:#0b63ff; --muted:#666; --bg:#f7f9fc; --card:#fff; }
+    body { font-family: Inter, system-ui, Arial; margin:0; background:var(--bg); color:#111; display:flex; min-height:100vh; }
+    .container { margin:auto; width:980px; max-width:95%; display:grid; grid-template-columns: 1fr 320px; gap:18px; padding:18px; align-items:start; }
+    .card { background:var(--card); border-radius:10px; padding:12px; box-shadow: 0 6px 18px rgba(12,34,80,0.06); }
+    header { grid-column:1/-1; display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; }
+    .left { display:flex; gap:12px; align-items:center; }
+    .id-bubble { font-weight:700; color:var(--accent); }
+    #chat { height:560px; overflow:auto; border-radius:8px; padding:12px; background:linear-gradient(180deg,#ffffff, #fcfdff); border:1px solid #eee; }
+    .msg { margin-bottom:10px; padding:8px; border-radius:8px; }
+    .meta { font-size:12px; color:var(--muted); margin-bottom:6px; }
+    .me { background:#e9fff3; border:1px solid #d9f6e5; }
+    .other { background:#f5f7fb; border:1px solid #eef1f8; }
+    .controls { display:flex; gap:8px; margin-top:8px; }
+    input[type="text"], textarea { width:100%; padding:10px; border-radius:8px; border:1px solid #ddd; font-size:14px; box-sizing:border-box; }
+    button { padding:8px 12px; border-radius:8px; border: none; background:var(--accent); color:white; cursor:pointer; }
+    button.ghost { background:transparent; color:var(--accent); border:1px solid #e0e8ff; }
+    .side { display:flex; flex-direction:column; gap:10px; }
+    .small { font-size:13px; color:var(--muted); }
+    .room-code { font-family: monospace; font-weight:700; font-size:16px; color:#0b63ff; }
+    .notice { font-size:13px; color:#444; padding:8px; border-radius:8px; background:#fffdfa; border:1px solid #f1e9c8; }
+    .actions { display:flex; gap:8px; }
+    .tiny { font-size:12px; padding:6px 8px; border-radius:6px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="left">
+        <h2 style="margin:0">Ephemeral Anonymous Chat</h2>
+        <div class="small">— public + private rooms, no storage</div>
+      </div>
+      <div class="right small">
+        <span id="userId" class="id-bubble">Connecting…</span>
+      </div>
+    </header>
+
+    <main class="card" style="grid-column:1/2">
+      <div id="chat" aria-live="polite"></div>
+
+      <div class="controls">
+        <input id="messageInput" type="text" placeholder="Type message and press Enter" autocomplete="off" />
+        <button id="sendBtn">Send</button>
+      </div>
+
+      <div style="margin-top:8px; display:flex; justify-content:space-between; gap:8px">
+        <div class="small">Current: <span id="currentScope">public</span></div>
+        <div class="small" id="roomInfo"></div>
+      </div>
+    </main>
+
+    <aside class="side">
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <strong>Public Chat</strong>
+          <div class="small" id="publicCount">—</div>
+        </div>
+        <div class="small" style="margin-top:8px">Public chat is global. All messages are ephemeral (RAM only).</div>
+        <div style="margin-top:8px" class="actions">
+          <button id="createRoomBtn" class="tiny">Create Private Room</button>
+          <button id="leaveRoomBtn" class="tiny ghost" disabled>Leave Room</button>
+        </div>
+
+        <hr style="margin:12px 0" />
+
+        <div>
+          <div class="small">Join Private Room</div>
+          <div style="margin-top:8px; display:flex; gap:8px">
+            <input id="joinRoomInput" type="text" placeholder="Room code" />
+            <button id="joinRoomBtn" class="tiny">Join</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <strong>Room Info</strong>
+        <div style="margin-top:8px" id="roomPanel">
+          <div class="small">Not in private room.</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <strong>About / Controls</strong>
+        <div class="small" style="margin-top:8px">
+          No accounts. New anonymous id every page load. Private rooms expire when participants leave.
+        </div>
+        <div style="margin-top:8px">
+          <button id="clearChatBtn" class="tiny ghost">Clear Chat View</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <script>
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = wsProtocol + '//' + location.host;
+    const ws = new WebSocket(wsUrl);
+
+    let myId = null;
+    let currentScope = 'public'; // 'public' or roomId
+    let currentRoom = null;
+    const chat = document.getElementById('chat');
+    const userIdSpan = document.getElementById('userId');
+    const currentScopeSpan = document.getElementById('currentScope');
+    const roomInfoSpan = document.getElementById('roomInfo');
+    const roomPanel = document.getElementById('roomPanel');
+    const leaveRoomBtn = document.getElementById('leaveRoomBtn');
+    const createRoomBtn = document.getElementById('createRoomBtn');
+    const joinRoomBtn = document.getElementById('joinRoomBtn');
+    const joinRoomInput = document.getElementById('joinRoomInput');
+    const messageInput = document.getElementById('messageInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const clearChatBtn = document.getElementById('clearChatBtn');
+
+    function appendMessage(textHtml, cls) {
+      const d = document.createElement('div');
+      d.className = 'msg ' + (cls || 'other');
+      d.innerHTML = textHtml;
+      chat.appendChild(d);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    function formatTime(ts) {
+      try {
+        return new Date(ts).toLocaleTimeString();
+      } catch (e) { return ''; }
+    }
+
+    function setScope(scope) {
+      currentScope = scope;
+      currentScopeSpan.textContent = scope === 'public' ? 'public' : 'private: ' + scope;
+      if (scope === 'public') {
+        leaveRoomBtn.disabled = true;
+        createRoomBtn.disabled = false;
+        roomPanel.innerHTML = '<div class="small">Not in private room.</div>';
+        roomInfoSpan.textContent = '';
+      } else {
+        leaveRoomBtn.disabled = false;
+        createRoomBtn.disabled = true;
+        roomInfoSpan.textContent = 'Room: ' + scope;
+      }
+    }
+
+    ws.addEventListener('open', () => {
+      appendMessage('<div class="meta">Connected to server</div>', 'other');
+      // auto in public
+      setScope('public');
+    });
+
+    ws.addEventListener('message', (ev) => {
+      try {
+        const obj = JSON.parse(ev.data);
+        if (obj.type === 'assign_id') {
+          myId = obj.userId;
+          userIdSpan.textContent = 'id: ' + myId.slice(0,8);
+        } else if (obj.type === 'public_buffer') {
+          // initial public messages
+          for (const m of obj.messages || []) {
+            const who = m.userId === myId ? 'You' : ('User ' + m.userId.slice(0,6));
+            const cls = m.userId === myId ? 'me' : 'other';
+            appendMessage(`<div class="meta">${who} · ${formatTime(m.ts)}</div><div>${m.text}</div>`, cls);
+          }
+        } else if (obj.type === 'message') {
+          if (obj.scope === 'public') {
+            const m = obj.message;
+            const who = m.userId === myId ? 'You' : ('User ' + m.userId.slice(0,6));
+            const cls = m.userId === myId ? 'me' : 'other';
+            appendMessage(`<div class="meta">${who} · ${formatTime(m.ts)}</div><div>${m.text}</div>`, cls);
+          } else if (obj.scope === 'room') {
+            // only show if in that room
+            if (currentScope !== obj.roomId) return;
+            const m = obj.message;
+            const who = m.userId === myId ? 'You' : ('User ' + m.userId.slice(0,6));
+            const cls = m.userId === myId ? 'me' : 'other';
+            appendMessage(`<div class="meta">${who} · ${formatTime(m.ts)}</div><div>${m.text}</div>`, cls);
+          }
+        } else if (obj.type === 'room_created') {
+          // server created and auto-joined us
+          currentRoom = obj.roomId;
+          setScope(currentRoom);
+          appendMessage(`<div class="meta">Private room created: <span class="room-code">${currentRoom}</span></div>`, 'other');
+          roomPanel.innerHTML = `<div class="small">Room code: <span class="room-code">${currentRoom}</span></div>
+                                 <div style="margin-top:8px"><button id="copyBtn" class="tiny">Copy Code</button></div>`;
+          document.getElementById('copyBtn').addEventListener('click', () => {
+            navigator.clipboard?.writeText(currentRoom).then(()=>alert('Copied!'), ()=>alert('Copy failed'));
+          });
+          messageInput.focus();
+        } else if (obj.type === 'joined') {
+          currentRoom = obj.roomId;
+          setScope(currentRoom);
+          appendMessage(`<div class="meta">Joined private room: <span class="room-code">${currentRoom}</span></div>`, 'other');
+          // show previous private messages (if any)
+          const msgs = obj.messages || [];
+          for (const m of msgs) {
+            const who = m.userId === myId ? 'You' : ('User ' + m.userId.slice(0,6));
+            const cls = m.userId === myId ? 'me' : 'other';
+            appendMessage(`<div class="meta">${who} · ${formatTime(m.ts)}</div><div>${m.text}</div>`, cls);
+          }
+          const pcount = (obj.participants || []).length;
+          roomPanel.innerHTML = `<div class="small">Room code: <span class="room-code">${currentRoom}</span></div>
+                                 <div class="small" style="margin-top:8px">Participants: ${pcount}</div>
+                                 <div style="margin-top:8px"><button id="copyBtn2" class="tiny">Copy Code</button></div>`;
+          document.getElementById('copyBtn2').addEventListener('click', () => {
+            navigator.clipboard?.writeText(currentRoom).then(()=>alert('Copied!'), ()=>alert('Copy failed'));
+          });
+          messageInput.focus();
+        } else if (obj.type === 'user_joined_room') {
+          if (currentScope === obj.roomId) {
+            appendMessage(`<div class="meta">User ${obj.userId.slice(0,6)} joined</div>`, 'other');
+          }
+        } else if (obj.type === 'user_left_room') {
+          if (currentScope === obj.roomId) {
+            appendMessage(`<div class="meta">User ${obj.userId.slice(0,6)} left</div>`, 'other');
+          }
+        } else if (obj.type === 'room_deleted') {
+          if (currentScope === obj.roomId) {
+            appendMessage(`<div class="meta">Room deleted (${obj.reason}) — returning to public</div>`, 'other');
+            // client-side: move to public
+            currentRoom = null;
+            setScope('public');
+          }
+        } else if (obj.type === 'error') {
+          appendMessage(`<div class="meta">Error: ${obj.message}</div>`, 'other');
+        } else if (obj.type === 'user_joined_public' || obj.type === 'user_left_public') {
+          // lightweight, not displaying everything to avoid noise
+        }
+      } catch (e) {
+        console.error('msg parse', e);
+      }
+    });
+
+    ws.addEventListener('close', () => {
+      appendMessage('<div class="meta">Disconnected from server</div>', 'other');
+    });
+
+    // UI actions
+    sendBtn.addEventListener('click', sendMessage);
+    messageInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
+    createRoomBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ type: 'create_room' }));
+    });
+    joinRoomBtn.addEventListener('click', () => {
+      const code = joinRoomInput.value.trim();
+      if (!code) return alert('Enter room code');
+      // send join request
+      ws.send(JSON.stringify({ type: 'join_room', roomId: code }));
+    });
+    leaveRoomBtn.addEventListener('click', () => {
+      ws.send(JSON.stringify({ type: 'leave_room' }));
+      currentRoom = null;
+      setScope('public');
+    });
+    clearChatBtn.addEventListener('click', () => { chat.innerHTML = ''; });
+
+    function sendMessage() {
+      const txt = messageInput.value.trim();
+      if (!txt) return;
+      ws.send(JSON.stringify({ type: 'message', text: txt }));
+      messageInput.value = '';
+    }
+
+    // initialize scope
+    setScope('public');
+  </script>
+</body>
+</html>
